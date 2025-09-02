@@ -2,8 +2,7 @@ import os
 import sys
 
 import torch
-
-from diffusers import (FlowMatchEulerDiscreteScheduler)
+from diffusers import FlowMatchEulerDiscreteScheduler
 
 current_file_path = os.path.abspath(__file__)
 project_roots = [os.path.dirname(current_file_path), os.path.dirname(os.path.dirname(current_file_path)), os.path.dirname(os.path.dirname(os.path.dirname(current_file_path)))]
@@ -11,10 +10,10 @@ for project_root in project_roots:
     sys.path.insert(0, project_root) if project_root not in sys.path else None
 
 from videox_fun.dist import set_multi_gpus_devices, shard_model
-from videox_fun.models import (AutoencoderKLQwenImage,
-                               Qwen2_5_VLForConditionalGeneration,
-                               Qwen2Tokenizer, QwenImageTransformer2DModel)
-from videox_fun.pipeline import QwenImagePipeline
+from videox_fun.models import (AutoencoderKL, CLIPTextModel, CLIPTokenizer,
+                               FluxTransformer2DModel, T5EncoderModel,
+                               T5TokenizerFast)
+from videox_fun.pipeline import FluxPipeline
 from videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
 from videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8,
@@ -34,7 +33,7 @@ from videox_fun.utils.lora_utils import merge_lora, unmerge_lora
 # 
 # sequential_cpu_offload means that each layer of the model will be moved to the CPU after use, 
 # resulting in slower speeds but saving a large amount of GPU memory.
-GPU_memory_mode     = "sequential_cpu_offload"
+GPU_memory_mode     = "model_cpu_offload_and_qfloat8"
 # Multi GPUs config
 # Please ensure that the product of ulysses_degree and ring_degree equals the number of GPUs used. 
 # For example, if you are using 8 GPUs, you can set ulysses_degree = 2 and ring_degree = 4.
@@ -49,7 +48,7 @@ fsdp_text_encoder   = False
 compile_dit         = False
 
 # model path
-model_name          = "models/Diffusion_Transformer/Qwen-Image"
+model_name          = "models/Diffusion_Transformer/FLUX.1-dev"
 
 # Choose the sampler in "Flow", "Flow_Unipc", "Flow_DPM++"
 sampler_name        = "Flow"
@@ -67,15 +66,15 @@ sample_size         = [1344, 768]
 weight_dtype        = torch.bfloat16
 prompt              = "1girl, black_hair, brown_eyes, earrings, freckles, grey_background, jewelry, lips, long_hair, looking_at_viewer, nose, piercing, realistic, red_lips, solo, upper_body"
 negative_prompt     = "The video is not of a high quality, it has a low resolution. Watermark present in each frame. The background is solid. Strange body and strange trajectory. Distortion. "
-guidance_scale      = 6.0
+guidance_scale      = 1.0
 seed                = 43
 num_inference_steps = 50
-lora_weight         = 0.55
-save_path           = "samples/qwenimage-t2i"
+lora_weight         = 0.70
+save_path           = "samples/flux-t2i"
 
 device = set_multi_gpus_devices(ulysses_degree, ring_degree)
 
-transformer = QwenImageTransformer2DModel.from_pretrained(
+transformer = FluxTransformer2DModel.from_pretrained(
     model_name, 
     subfolder="transformer",
     low_cpu_mem_usage=True,
@@ -95,7 +94,7 @@ if transformer_path is not None:
     print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
 
 # Get Vae
-vae = AutoencoderKLQwenImage.from_pretrained(
+vae = AutoencoderKL.from_pretrained(
     model_name, 
     subfolder="vae"
 ).to(weight_dtype)
@@ -113,11 +112,18 @@ if vae_path is not None:
     print(f"missing keys: {len(m)}, unexpected keys: {len(u)}")
 
 # Get tokenizer and text_encoder
-tokenizer = Qwen2Tokenizer.from_pretrained(
+tokenizer = CLIPTokenizer.from_pretrained(
     model_name, subfolder="tokenizer"
 )
-text_encoder = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+text_encoder = CLIPTextModel.from_pretrained(
     model_name, subfolder="text_encoder", torch_dtype=weight_dtype
+)
+
+tokenizer_2 = T5TokenizerFast.from_pretrained(
+    model_name, subfolder="tokenizer_2"
+)
+text_encoder_2 = T5EncoderModel.from_pretrained(
+    model_name, subfolder="text_encoder_2", torch_dtype=weight_dtype
 )
 
 # Get Scheduler
@@ -131,10 +137,12 @@ scheduler = Chosen_Scheduler.from_pretrained(
     subfolder="scheduler"
 )
 
-pipeline = QwenImagePipeline(
+pipeline = FluxPipeline(
     vae=vae,
     tokenizer=tokenizer,
     text_encoder=text_encoder,
+    tokenizer_2=tokenizer_2,
+    text_encoder_2=text_encoder_2,
     transformer=transformer,
     scheduler=scheduler,
 )
