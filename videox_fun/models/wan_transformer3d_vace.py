@@ -1,9 +1,9 @@
 # Modified from https://github.com/ali-vilab/VACE/blob/main/vace/models/wan/wan_vace.py
 # -*- coding: utf-8 -*-
 # Copyright (c) Alibaba, Inc. and its affiliates.
-import math
 from typing import Any, Dict
 
+import math
 import torch
 import torch.cuda.amp as amp
 import torch.nn as nn
@@ -202,7 +202,7 @@ class VaceWanTransformer3DModel(WanTransformer3DModel):
         # params
         dtype = x.dtype
         device = self.patch_embedding.weight.device
-        if self.freqs.device != device:
+        if self.freqs.device != device and torch.device(type="meta") != device:
             self.freqs = self.freqs.to(device)
 
         # if y is not None:

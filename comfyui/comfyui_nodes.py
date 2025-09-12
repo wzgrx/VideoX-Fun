@@ -13,18 +13,23 @@ from .cogvideox_fun.nodes import (CogVideoXFunInpaintSampler,
                                   CogVideoXFunV2VSampler, LoadCogVideoXFunLora,
                                   LoadCogVideoXFunModel)
 from .comfyui_utils import script_directory
-from .wan2_1.nodes import (LoadWanClipEncoderModel, LoadWanLora, LoadWanModel, CombineWanPipeline,
-                           LoadWanTextEncoderModel, LoadWanTransformerModel,
-                           LoadWanVAEModel, WanI2VSampler, WanT2VSampler)
+from .wan2_1.nodes import (CombineWanPipeline, LoadWanClipEncoderModel,
+                           LoadWanLora, LoadWanModel, LoadWanTextEncoderModel,
+                           LoadWanTransformerModel, LoadWanVAEModel,
+                           WanI2VSampler, WanT2VSampler)
 from .wan2_1_fun.nodes import (LoadWanFunLora, LoadWanFunModel,
                                WanFunInpaintSampler, WanFunT2VSampler,
                                WanFunV2VSampler)
-from .wan2_2.nodes import (LoadWan2_2Lora, LoadWan2_2Model, Wan2_2I2VSampler,
-                           LoadWan2_2TransformerModel, CombineWan2_2Pipeline,
-                           Wan2_2T2VSampler)
+from .wan2_2.nodes import (CombineWan2_2Pipeline, LoadWan2_2Lora,
+                           LoadWan2_2Model, LoadWan2_2TransformerModel,
+                           Wan2_2I2VSampler, Wan2_2T2VSampler)
 from .wan2_2_fun.nodes import (LoadWan2_2FunLora, LoadWan2_2FunModel,
                                Wan2_2FunInpaintSampler, Wan2_2FunT2VSampler,
                                Wan2_2FunV2VSampler)
+from .wan2_2_vace_fun.nodes import (CombineWan2_2VaceFunPipeline,
+                                    LoadVaceWanTransformer3DModel,
+                                    LoadWan2_2VaceFunModel,
+                                    Wan2_2VaceFunSampler)
 
 
 class FunTextBox:
@@ -232,6 +237,27 @@ class ImageMaximumNode:
             outputs = torch.maximum(video_1, video_2[:length_1])
         return (outputs, )
 
+class ImageCollectNode:
+    RETURN_TYPES = ("IMAGE", )
+    RETURN_NAMES = ("image", )
+    FUNCTION = "imagecollect"
+    CATEGORY = "CogVideoXFUNWrapper"
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "image_1": ("IMAGE",)
+            },
+            "optional": {
+                "image_2": ("IMAGE",),
+            }
+    } 
+
+    def imagecollect(self, image_1, image_2):
+        image_out = [_image_1 for _image_1 in image_1] + [_image_2 for _image_2 in image_2]
+        return (image_out, )
+
 class CameraBasicFromChaoJie:
     # Copied from https://github.com/chaojie/ComfyUI-CameraCtrl-Wrapper/blob/main/nodes.py
     # Since ComfyUI-CameraCtrl-Wrapper requires a specific version of diffusers, which is not suitable for us. 
@@ -374,19 +400,25 @@ NODE_CLASS_MAPPINGS = {
     "WanFunInpaintSampler": WanFunInpaintSampler,
     "WanFunV2VSampler": WanFunV2VSampler,
 
+    "LoadWan2_2TransformerModel": LoadWan2_2TransformerModel, 
+    "CombineWan2_2Pipeline": CombineWan2_2Pipeline,
+
     "LoadWan2_2Model": LoadWan2_2Model,
     "LoadWan2_2Lora": LoadWan2_2Lora,
     "Wan2_2T2VSampler": Wan2_2T2VSampler,
     "Wan2_2I2VSampler": Wan2_2I2VSampler,
-
-    "LoadWan2_2TransformerModel": LoadWan2_2TransformerModel, 
-    "CombineWan2_2Pipeline": CombineWan2_2Pipeline,
 
     "LoadWan2_2FunModel": LoadWan2_2FunModel,
     "LoadWan2_2FunLora": LoadWan2_2FunLora,
     "Wan2_2FunT2VSampler": Wan2_2FunT2VSampler,
     "Wan2_2FunInpaintSampler": Wan2_2FunInpaintSampler,
     "Wan2_2FunV2VSampler": Wan2_2FunV2VSampler,
+
+    "LoadVaceWanTransformer3DModel": LoadVaceWanTransformer3DModel, 
+    "CombineWan2_2VaceFunPipeline": CombineWan2_2VaceFunPipeline,
+
+    "LoadWan2_2VaceFunModel": LoadWan2_2VaceFunModel,
+    "Wan2_2VaceFunSampler": Wan2_2VaceFunSampler,
 
     "VideoToCanny": VideoToCanny,
     "VideoToDepth": VideoToDepth,
@@ -398,6 +430,7 @@ NODE_CLASS_MAPPINGS = {
     "CameraJoinFromChaoJie": CameraJoinFromChaoJie,
     "CameraCombineFromChaoJie": CameraCombineFromChaoJie,
     "ImageMaximumNode": ImageMaximumNode,
+    "ImageCollectNode": ImageCollectNode,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
     "FunTextBox": "FunTextBox",
@@ -411,6 +444,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "CombineWanPipeline": "Combine Wan Pipeline", 
     "LoadWan2_2TransformerModel": "Load Wan2_2 TransformerModel", 
     "CombineWan2_2Pipeline": "Combine Wan2_2 Pipeline",
+    "LoadVaceWanTransformer3DModel": "Load Vace Wan Transformer3DModel", 
+    "CombineWan2_2VaceFunPipeline": "Combine Wan2_2 Vace Fun Pipeline",
 
     "LoadCogVideoXFunModel": "Load CogVideoX-Fun Model",
     "LoadCogVideoXFunLora": "Load CogVideoX-Fun Lora",
@@ -439,6 +474,9 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "Wan2_2FunT2VSampler": "Wan 2.2 Fun Sampler for Text to Video",
     "Wan2_2FunInpaintSampler": "Wan 2.2 Fun Sampler for Image to Video",
     "Wan2_2FunV2VSampler": "Wan 2.2 Fun Sampler for Video to Video",
+
+    "LoadWan2_2VaceFunModel": "Load Wan2_2 Vace Fun Model",
+    "Wan2_2VaceFunSampler": "Wan2_2 Vace Fun Sampler",
     
     "VideoToCanny": "Video To Canny",
     "VideoToDepth": "Video To Depth",
@@ -450,4 +488,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "CameraJoinFromChaoJie": "Camera Join From ChaoJie",
     "CameraCombineFromChaoJie": "Camera Combine From ChaoJie",
     "ImageMaximumNode": "Image Maximum Node",
+    "ImageCollectNode": "Image Collect Node",
 }
