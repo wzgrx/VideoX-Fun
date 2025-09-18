@@ -108,12 +108,15 @@ fps                 = 16
 
 # Use torch.float16 if GPU does not support torch.bfloat16
 # ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
-weight_dtype                    = torch.bfloat16
-control_video                   = "asset/pose.mp4"
-start_image                     = None
-end_image                       = None
-subject_ref_images              = ["asset/8.png"]
-vace_context_scale              = 1.00
+weight_dtype        = torch.bfloat16
+control_video       = "asset/pose.mp4"
+start_image         = None
+end_image           = None
+# Use inpaint video instead of start image and end image.
+inpaint_video       = None
+inpaint_video_mask  = None
+subject_ref_images  = ["asset/8.png"]
+vace_context_scale  = 1.00
 # Sometimes, when generating a video from a reference image, white borders appear.
 # Because the padding is mistakenly treated as part of the image. 
 # If the aspect ratio of the reference image is close to the final output, you can omit the white padding.
@@ -306,9 +309,9 @@ if cfg_skip_ratio is not None:
 generator = torch.Generator(device=device).manual_seed(seed)
 
 if lora_path is not None:
-    pipeline = merge_lora(pipeline, lora_path, lora_weight, device=device)
+    pipeline = merge_lora(pipeline, lora_path, lora_weight, device=device, dtype=weight_dtype)
     if transformer_2 is not None:
-        pipeline = merge_lora(pipeline, lora_high_path, lora_high_weight, device=device, sub_transformer_name="transformer_2")
+        pipeline = merge_lora(pipeline, lora_high_path, lora_high_weight, device=device, dtype=weight_dtype, sub_transformer_name="transformer_2")
 
 with torch.no_grad():
     video_length = int((video_length - 1) // vae.config.temporal_compression_ratio * vae.config.temporal_compression_ratio) + 1 if video_length != 1 else 1
@@ -323,7 +326,14 @@ with torch.no_grad():
         subject_ref_images = [get_image_latent(_subject_ref_image, sample_size=sample_size, padding=padding_in_subject_ref_images) for _subject_ref_image in subject_ref_images]
         subject_ref_images = torch.cat(subject_ref_images, dim=2)
 
-    inpaint_video, inpaint_video_mask, clip_image = get_image_to_video_latent(start_image, end_image, video_length=video_length, sample_size=sample_size)
+    if inpaint_video is not None:
+        if inpaint_video_mask is None:
+            raise ValueError("inpaint_video_mask is required when inpaint_video is provided")
+        inpaint_video, _, _, _ = get_video_to_video_latent(inpaint_video, video_length=video_length, sample_size=sample_size, fps=fps, ref_image=None)
+        inpaint_video_mask, _, _, _ = get_video_to_video_latent(inpaint_video_mask, video_length=video_length, sample_size=sample_size, fps=fps, ref_image=None)
+        inpaint_video_mask = inpaint_video_mask[:, :1]
+    else:
+        inpaint_video, inpaint_video_mask, clip_image = get_image_to_video_latent(start_image, end_image, video_length=video_length, sample_size=sample_size)
 
     control_video, _, _, _ = get_video_to_video_latent(control_video, video_length=video_length, sample_size=sample_size, fps=fps, ref_image=None)
 
@@ -347,9 +357,9 @@ with torch.no_grad():
     ).videos
 
 if lora_path is not None:
-    pipeline = unmerge_lora(pipeline, lora_path, lora_weight, device=device)
+    pipeline = unmerge_lora(pipeline, lora_path, lora_weight, device=device, dtype=weight_dtype)
     if transformer_2 is not None:
-        pipeline = unmerge_lora(pipeline, lora_high_path, lora_high_weight, device=device, sub_transformer_name="transformer_2")
+        pipeline = unmerge_lora(pipeline, lora_high_path, lora_high_weight, device=device, dtype=weight_dtype, sub_transformer_name="transformer_2")
 
 def save_results():
     if not os.path.exists(save_path):

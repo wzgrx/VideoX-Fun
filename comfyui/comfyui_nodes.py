@@ -1,4 +1,5 @@
 import json
+import os
 
 import cv2
 import numpy as np
@@ -83,20 +84,28 @@ class FunCompile:
     def compile(self, cache_size_limit, funmodels):
         torch._dynamo.config.cache_size_limit = cache_size_limit
         if hasattr(funmodels["pipeline"].transformer, "blocks"):
-            for i in range(len(funmodels["pipeline"].transformer.blocks)):
-                funmodels["pipeline"].transformer.blocks[i] = torch.compile(funmodels["pipeline"].transformer.blocks[i])
+            for i, block in enumerate(funmodels["pipeline"].transformer.blocks):
+                if hasattr(block, "_orig_mod"):
+                    block = block._orig_mod
+                funmodels["pipeline"].transformer.blocks[i] = torch.compile(block)
         
             if hasattr(funmodels["pipeline"], "transformer_2") and funmodels["pipeline"].transformer_2 is not None:
-                for i in range(len(funmodels["pipeline"].transformer_2.blocks)):
-                    funmodels["pipeline"].transformer_2.blocks[i] = torch.compile(funmodels["pipeline"].transformer_2.blocks[i])
+                for i, block in enumerate(funmodels["pipeline"].transformer_2.blocks):
+                    if hasattr(block, "_orig_mod"):
+                        block = block._orig_mod
+                    funmodels["pipeline"].transformer_2.blocks[i] = torch.compile(block)
             
         elif hasattr(funmodels["pipeline"].transformer, "transformer_blocks"):
-            for i in range(len(funmodels["pipeline"].transformer.transformer_blocks)):
-                funmodels["pipeline"].transformer.transformer_blocks[i] = torch.compile(funmodels["pipeline"].transformer.transformer_blocks[i])
-
+            for i, block in enumerate(funmodels["pipeline"].transformer.transformer_blocks):
+                if hasattr(block, "_orig_mod"):
+                    block = block._orig_mod
+                funmodels["pipeline"].transformer.transformer_blocks[i] = torch.compile(block)
+        
             if hasattr(funmodels["pipeline"], "transformer_2") and funmodels["pipeline"].transformer_2 is not None:
-                for i in range(len(funmodels["pipeline"].transformer_2.transformer_blocks)):
-                    funmodels["pipeline"].transformer_2.transformer_blocks[i] = torch.compile(funmodels["pipeline"].transformer_2.transformer_blocks[i])
+                for i, block in enumerate(funmodels["pipeline"].transformer_2.transformer_blocks):
+                    if hasattr(block, "_orig_mod"):
+                        block = block._orig_mod
+                    funmodels["pipeline"].transformer_2.transformer_blocks[i] = torch.compile(block)
         
         else:
             funmodels["pipeline"].transformer.forward = torch.compile(funmodels["pipeline"].transformer.forward)
@@ -105,6 +114,31 @@ class FunCompile:
                 funmodels["pipeline"].transformer_2.forward = torch.compile(funmodels["pipeline"].transformer_2.forward)
 
         print("Add Compile")
+        return (funmodels,)
+    
+class FunAttention:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "attention_type": (
+                    ["flash", "sage", "torch"],
+                    {"default": "flash"},
+                ),
+                "funmodels": ("FunModels",)
+            }
+        }
+    RETURN_TYPES = ("FunModels",)
+    RETURN_NAMES = ("funmodels",)
+    FUNCTION = "funattention"
+    CATEGORY = "CogVideoXFUNWrapper"
+
+    def funattention(self, attention_type, funmodels):
+        os.environ['VIDEOX_ATTENTION_TYPE'] = {
+            "flash": "FLASH_ATTENTION",
+            "sage": "SAGE_ATTENTION",
+            "torch": "TORCH_SCALED_DOT"
+        }[attention_type]
         return (funmodels,)
 
 class LoadConfig:
@@ -376,6 +410,7 @@ NODE_CLASS_MAPPINGS = {
     "FunTextBox": FunTextBox,
     "FunRiflex": FunRiflex,
     "FunCompile": FunCompile,
+    "FunAttention": FunAttention,
 
     "LoadCogVideoXFunModel": LoadCogVideoXFunModel,
     "LoadCogVideoXFunLora": LoadCogVideoXFunLora,
@@ -436,6 +471,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunTextBox": "FunTextBox",
     "FunRiflex": "FunRiflex",
     "FunCompile": "FunCompile",
+    "FunAttention": "FunAttention",
 
     "LoadWanClipEncoderModel": "Load Wan ClipEncoder Model",
     "LoadWanTextEncoderModel": "Load Wan TextEncoder Model",
