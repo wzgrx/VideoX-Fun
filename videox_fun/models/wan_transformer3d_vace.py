@@ -13,6 +13,7 @@ from diffusers.utils import is_torch_version
 
 from .wan_transformer3d import (WanAttentionBlock, WanTransformer3DModel,
                                 sinusoidal_embedding_1d)
+from ..utils import cfg_skip
 
 
 VIDEOX_OFFLOAD_VACE_LATENTS = os.environ.get("VIDEOX_OFFLOAD_VACE_LATENTS", False)
@@ -178,6 +179,7 @@ class VaceWanTransformer3DModel(WanTransformer3DModel):
         hints = torch.unbind(c)[:-1]
         return hints
 
+    @cfg_skip()
     def forward(
         self,
         x,
