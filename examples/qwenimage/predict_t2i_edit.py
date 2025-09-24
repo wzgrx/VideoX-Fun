@@ -2,8 +2,8 @@ import os
 import sys
 
 import torch
-
-from diffusers import (FlowMatchEulerDiscreteScheduler)
+from diffusers import FlowMatchEulerDiscreteScheduler
+from PIL import Image
 
 current_file_path = os.path.abspath(__file__)
 project_roots = [os.path.dirname(current_file_path), os.path.dirname(os.path.dirname(current_file_path)), os.path.dirname(os.path.dirname(os.path.dirname(current_file_path)))]
@@ -13,14 +13,16 @@ for project_root in project_roots:
 from videox_fun.dist import set_multi_gpus_devices, shard_model
 from videox_fun.models import (AutoencoderKLQwenImage,
                                Qwen2_5_VLForConditionalGeneration,
-                               Qwen2Tokenizer, QwenImageTransformer2DModel)
+                               Qwen2Tokenizer, Qwen2VLProcessor,
+                               QwenImageTransformer2DModel)
 from videox_fun.models.cache_utils import get_teacache_coefficients
-from videox_fun.pipeline import QwenImagePipeline
+from videox_fun.pipeline import QwenImageEditPipeline
 from videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
 from videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8,
                                                convert_weight_dtype_wrapper)
 from videox_fun.utils.lora_utils import merge_lora, unmerge_lora
+from videox_fun.utils.utils import get_image
 
 # GPU memory mode, which can be chosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
 # model_full_load means that the entire model will be moved to the GPU.
@@ -65,7 +67,7 @@ teacache_offload    = False
 cfg_skip_ratio      = 0
 
 # model path
-model_name          = "models/Diffusion_Transformer/Qwen-Image"
+model_name          = "models/Diffusion_Transformer/Qwen-Image-Edit"
 
 # Choose the sampler in "Flow", "Flow_Unipc", "Flow_DPM++"
 sampler_name        = "Flow"
@@ -81,13 +83,16 @@ sample_size         = [1344, 768]
 # Use torch.float16 if GPU does not support torch.bfloat16
 # ome graphics cards, such as v100, 2080ti, do not support torch.bfloat16
 weight_dtype        = torch.bfloat16
-prompt              = "1girl, black_hair, brown_eyes, earrings, freckles, grey_background, jewelry, lips, long_hair, looking_at_viewer, nose, piercing, realistic, red_lips, solo, upper_body"
+image               = "asset/8.png"
+# 使用更长的neg prompt如"模糊，突变，变形，失真，画面暗，文本字幕，画面固定，连环画，漫画，线稿，没有主体。"，可以增加稳定性
+# 在neg prompt中添加"安静，固定"等词语可以增加动态性。
+prompt              = "一位年轻女子站在阳光明媚的海岸线上，身穿清爽的白色衬衫与裙子，在轻拂的海风中微微飘动。她拥有一头鲜艳的紫色长发，在风中轻盈舞动，发间系着一个精致的黑色蝴蝶结，与身后柔和的蔚蓝天空形成鲜明对比。她面容清秀，眉目精致，透着一股甜美的青春气息；神情柔和，略带羞涩，目光静静地凝望着远方的地平线，双手自然交叠于身前，仿佛沉浸在思绪之中。在她身后，是辽阔无垠、波光粼粼的大海，阳光洒在海面上，映出温暖的金色光晕。"
 negative_prompt     = " "
 guidance_scale      = 4.0
 seed                = 43
 num_inference_steps = 50
 lora_weight         = 0.55
-save_path           = "samples/qwenimage-t2i"
+save_path           = "samples/qwenimage-t2i-edit"
 
 device = set_multi_gpus_devices(ulysses_degree, ring_degree)
 
@@ -136,6 +141,12 @@ text_encoder = Qwen2_5_VLForConditionalGeneration.from_pretrained(
     model_name, subfolder="text_encoder", torch_dtype=weight_dtype
 )
 
+# Get processor
+processor = Qwen2VLProcessor.from_pretrained(
+    model_name,
+    subfolder="processor"
+)
+
 # Get Scheduler
 Chosen_Scheduler = scheduler_dict = {
     "Flow": FlowMatchEulerDiscreteScheduler,
@@ -147,11 +158,12 @@ scheduler = Chosen_Scheduler.from_pretrained(
     subfolder="scheduler"
 )
 
-pipeline = QwenImagePipeline(
+pipeline = QwenImageEditPipeline(
     vae=vae,
     tokenizer=tokenizer,
     text_encoder=text_encoder,
     transformer=transformer,
+    processor=processor,
     scheduler=scheduler,
 )
 
@@ -164,6 +176,7 @@ if ulysses_degree > 1 or ring_degree > 1:
         print("Add FSDP DIT")
     if fsdp_text_encoder:
         from functools import partial
+
         from videox_fun.dist import set_multi_gpus_devices, shard_model
         shard_fn = partial(shard_model, device_id=device, param_dtype=weight_dtype, module_to_wrapper=text_encoder.language_model.layers)
         text_encoder = shard_fn(text_encoder)
@@ -200,14 +213,19 @@ if cfg_skip_ratio is not None:
     print(f"Enable cfg_skip_ratio {cfg_skip_ratio}.")
     pipeline.transformer.enable_cfg_skip(cfg_skip_ratio, num_inference_steps)
 
+# for prompt in prompts:
 generator = torch.Generator(device=device).manual_seed(seed)
 
 if lora_path is not None:
     pipeline = merge_lora(pipeline, lora_path, lora_weight, device=device, dtype=weight_dtype)
 
+# open
+image = get_image(image)
+
 with torch.no_grad():
     sample = pipeline(
-        prompt, 
+        prompt = prompt, 
+        image = image,
         negative_prompt = negative_prompt,
         height      = sample_size[0],
         width       = sample_size[1],

@@ -1037,14 +1037,6 @@ def main():
                     ]
                 random_sample_size = [int(x / 16) * 16 for x in random_sample_size]
 
-            min_example_length = min(
-                [example["pixel_values"].shape[0] for example in examples]
-            )
-            batch_video_length = int(min(batch_video_length, min_example_length))
-            
-            # Magvae needs the number of frames to be 4n + 1.
-            batch_video_length = (batch_video_length - 1) // sample_n_frames_bucket_interval * sample_n_frames_bucket_interval + 1
-
             for example in examples:
                 if args.random_ratio_crop:
                     # To 0~1
@@ -1083,6 +1075,10 @@ def main():
                         transforms.CenterCrop(closest_size),
                         transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True),
                     ])
+                new_examples["pixel_values"].append(transform(pixel_values))
+                new_examples["text"].append(example["text"])
+
+                batch_video_length = int(min(batch_video_length, len(pixel_values)))
 
                 # Magvae needs the number of frames to be 4n + 1.
                 local_latent_length = (batch_video_length - 1) // sample_n_frames_bucket_interval + 1
@@ -1097,9 +1093,6 @@ def main():
 
                 if batch_video_length <= 0:
                     batch_video_length = 1
-                
-                new_examples["pixel_values"].append(transform(pixel_values)[:batch_video_length])
-                new_examples["text"].append(example["text"])
 
                 if args.train_mode != "normal":
                     mask = get_random_mask(new_examples["pixel_values"][-1].size())
@@ -1108,10 +1101,10 @@ def main():
                     new_examples["mask"].append(mask)
 
             # Limit the number of frames to the same
-            new_examples["pixel_values"] = torch.stack([example for example in new_examples["pixel_values"]])
+            new_examples["pixel_values"] = torch.stack([example[:batch_video_length] for example in new_examples["pixel_values"]])
             if args.train_mode != "normal":
-                new_examples["mask_pixel_values"] = torch.stack([example for example in new_examples["mask_pixel_values"]])
-                new_examples["mask"] = torch.stack([example for example in new_examples["mask"]])
+                new_examples["mask_pixel_values"] = torch.stack([example[:batch_video_length] for example in new_examples["mask_pixel_values"]])
+                new_examples["mask"] = torch.stack([example[:batch_video_length] for example in new_examples["mask"]])
 
             # Encode prompts when enable_text_encoder_in_dataloader=True
             if args.enable_text_encoder_in_dataloader:
@@ -1662,6 +1655,9 @@ def main():
                                 for removing_checkpoint in removing_checkpoints:
                                     removing_checkpoint = os.path.join(args.output_dir, removing_checkpoint)
                                     shutil.rmtree(removing_checkpoint)
+                        gc.collect()
+                        torch.cuda.empty_cache()
+                        torch.cuda.ipc_collect()
                         if not args.save_state:
                             safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
                             save_model(safetensor_save_path, accelerator.unwrap_model(network))
@@ -1708,6 +1704,9 @@ def main():
     # Create the pipeline using the trained modules and save it.
     accelerator.wait_for_everyone()
     if args.use_deepspeed or accelerator.is_main_process:
+        gc.collect()
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
         if not args.save_state:
             safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
             save_model(safetensor_save_path, accelerator.unwrap_model(network))
