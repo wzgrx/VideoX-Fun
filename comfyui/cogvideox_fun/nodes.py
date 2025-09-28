@@ -28,7 +28,7 @@ from ...videox_fun.utils.lora_utils import merge_lora, unmerge_lora
 from ...videox_fun.utils.utils import (get_image_to_video_latent,
                                       get_video_to_video_latent,
                                       save_videos_grid)
-from ...videox_fun.utils.fp8_optimization import convert_weight_dtype_wrapper
+from ...videox_fun.utils.fp8_optimization import convert_weight_dtype_wrapper, undo_convert_weight_dtype_wrapper
 from ..comfyui_utils import (eas_cache_dir, script_directory,
                              search_model_in_possible_folders, to_pil)
 
@@ -89,6 +89,10 @@ class LoadCogVideoXFunModel:
         device          = mm.get_torch_device()
         offload_device  = mm.unet_offload_device()
         weight_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}[precision]
+
+        mm.unload_all_models()
+        mm.cleanup_models()
+        mm.soft_empty_cache()
 
         # Init processbar
         pbar = ProgressBar(5)
@@ -158,6 +162,10 @@ class LoadCogVideoXFunModel:
                 transformer=transformer,
                 scheduler=scheduler,
             )
+
+        pipeline.remove_all_hooks()
+        undo_convert_weight_dtype_wrapper(transformer)
+
         if GPU_memory_mode == "sequential_cpu_offload":
             pipeline.enable_sequential_cpu_offload()
         elif GPU_memory_mode == "model_cpu_offload_and_qfloat8":

@@ -29,13 +29,13 @@ from ...videox_fun.ui.controller import all_cheduler_dict
 from ...videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
 from ...videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 from ...videox_fun.utils.fp8_optimization import (
-    convert_model_weight_to_float8, convert_weight_dtype_wrapper,
+    convert_model_weight_to_float8, convert_weight_dtype_wrapper, undo_convert_weight_dtype_wrapper,
     replace_parameters_by_name)
 from ...videox_fun.utils.lora_utils import merge_lora, unmerge_lora
 from ...videox_fun.utils.utils import (filter_kwargs,
                                        get_image_to_video_latent,
                                        get_video_to_video_latent,
-                                       save_videos_grid)
+                                       save_videos_grid, get_autocast_dtype)
 from ..comfyui_utils import (eas_cache_dir, script_directory, search_sub_dir_in_possible_folders,
                              search_model_in_possible_folders, to_pil)
 
@@ -89,7 +89,16 @@ class LoadWanTransformerModel:
         # Init weight_dtype and device
         device          = mm.get_torch_device()
         offload_device  = mm.unet_offload_device()
-        weight_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16}[precision]
+        weight_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}[precision]
+
+        mm.unload_all_models()
+        mm.cleanup_models()
+        mm.soft_empty_cache()
+
+        mm.unload_all_models()
+        mm.cleanup_models()
+        mm.soft_empty_cache()
+        transformer = None
 
         model_path = folder_paths.get_full_path("diffusion_models", model_name)
         transformer_state_dict = load_torch_file(model_path, safe_load=True)
@@ -376,7 +385,7 @@ class CombineWanPipeline:
 
     def loadmodel(self, model_name, GPU_memory_mode, model_type, transformer, vae, text_encoder, tokenizer, clip_encoder=None):
         # Get pipeline
-        weight_dtype    = transformer.dtype
+        weight_dtype    = transformer.dtype if transformer.dtype not in [torch.float32, torch.float8_e4m3fn, torch.float8_e5m2] else get_autocast_dtype()
         device          = mm.get_torch_device()
         offload_device  = mm.unet_offload_device()
 
@@ -407,6 +416,11 @@ class CombineWanPipeline:
                 scheduler=None,
                 clip_image_encoder=clip_encoder
             )
+
+        pipeline.remove_all_hooks()
+        undo_convert_weight_dtype_wrapper(transformer)
+        pipeline.to(device=offload_device)
+        transformer = transformer.to(weight_dtype)
 
         if GPU_memory_mode == "sequential_cpu_offload":
             replace_parameters_by_name(transformer, ["modulation",], device=device)
@@ -483,7 +497,11 @@ class LoadWanModel:
         # Init weight_dtype and device
         device          = mm.get_torch_device()
         offload_device  = mm.unet_offload_device()
-        weight_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16}[precision]
+        weight_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}[precision]
+
+        mm.unload_all_models()
+        mm.cleanup_models()
+        mm.soft_empty_cache()
 
         # Init processbar
         pbar = ProgressBar(5)
@@ -566,6 +584,9 @@ class LoadWanModel:
                 )
         else:
             raise ValueError(f"Model type {model_type} not supported")
+
+        pipeline.remove_all_hooks()
+        undo_convert_weight_dtype_wrapper(transformer)
 
         if GPU_memory_mode == "sequential_cpu_offload":
             replace_parameters_by_name(transformer, ["modulation",], device=device)

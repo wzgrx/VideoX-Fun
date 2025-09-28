@@ -27,10 +27,10 @@ from ...videox_fun.pipeline import QwenImagePipeline, QwenImageEditPipeline
 from ...videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
 from ...videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 from ...videox_fun.utils.fp8_optimization import (
-    convert_model_weight_to_float8, convert_weight_dtype_wrapper,
+    convert_model_weight_to_float8, convert_weight_dtype_wrapper, undo_convert_weight_dtype_wrapper,
     replace_parameters_by_name)
 from ...videox_fun.utils.lora_utils import merge_lora, unmerge_lora
-from ...videox_fun.utils.utils import filter_kwargs, get_image
+from ...videox_fun.utils.utils import filter_kwargs, get_image, get_autocast_dtype
 from ..comfyui_utils import (eas_cache_dir, script_directory, to_pil,
                              search_model_in_possible_folders,
                              search_sub_dir_in_possible_folders)
@@ -92,6 +92,11 @@ class LoadQwenImageTransformerModel:
         device          = mm.get_torch_device()
         offload_device  = mm.unet_offload_device()
         weight_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16}[precision]
+
+        mm.unload_all_models()
+        mm.cleanup_models()
+        mm.soft_empty_cache()
+        transformer = None
 
         model_path = folder_paths.get_full_path("diffusion_models", model_name)
         transformer_state_dict = load_torch_file(model_path, safe_load=True)
@@ -471,7 +476,7 @@ class CombineQwenImagePipeline:
 
     def loadmodel(self, model_name, GPU_memory_mode, transformer, vae, text_encoder, tokenizer, processor=None, transformer_2=None):
         # Get pipeline
-        weight_dtype    = transformer.dtype
+        weight_dtype    = transformer.dtype if transformer.dtype not in [torch.float32, torch.float8_e4m3fn, torch.float8_e5m2] else get_autocast_dtype()
         device          = mm.get_torch_device()
         offload_device  = mm.unet_offload_device()
 
@@ -497,6 +502,11 @@ class CombineQwenImagePipeline:
                 )
         else:
             raise ValueError("Not supported now.")
+
+        pipeline.remove_all_hooks()
+        undo_convert_weight_dtype_wrapper(transformer)
+        pipeline.to(device=offload_device)
+        transformer = transformer.to(weight_dtype)
 
         if GPU_memory_mode == "sequential_cpu_offload":
             pipeline.enable_sequential_cpu_offload(device=device)
@@ -562,6 +572,10 @@ class LoadQwenImageModel:
         device          = mm.get_torch_device()
         offload_device  = mm.unet_offload_device()
         weight_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}[precision]
+
+        mm.unload_all_models()
+        mm.cleanup_models()
+        mm.soft_empty_cache()
 
         # Init processbar
         pbar = ProgressBar(5)
@@ -641,6 +655,9 @@ class LoadQwenImageModel:
                 )
         else:
             raise ValueError("Not supported now.")
+
+        pipeline.remove_all_hooks()
+        undo_convert_weight_dtype_wrapper(transformer)
 
         if GPU_memory_mode == "sequential_cpu_offload":
             pipeline.enable_sequential_cpu_offload(device=device)
@@ -808,7 +825,7 @@ class QwenImageT2VSampler:
                         lora_path_before = copy.deepcopy(lora_path_now)
                         pipeline.transformer.load_state_dict(transformer_cpu_cache)
                         for _lora_path, _lora_weight in zip(funmodels.get("loras", []), funmodels.get("strength_model", [])):
-                            pipeline = merge_lora(pipeline, _lora_path, _lora_weight, device="cuda", dtype=weight_dtype)
+                            pipeline = merge_lora(pipeline, _lora_path, _lora_weight, device=device, dtype=weight_dtype)
                    
             else:
                 print('Merge Lora')
@@ -820,7 +837,7 @@ class QwenImageT2VSampler:
                     gc.collect()
                 
                 for _lora_path, _lora_weight in zip(funmodels.get("loras", []), funmodels.get("strength_model", [])):
-                    pipeline = merge_lora(pipeline, _lora_path, _lora_weight, device="cuda", dtype=weight_dtype)
+                    pipeline = merge_lora(pipeline, _lora_path, _lora_weight, device=device, dtype=weight_dtype)
 
             sample = pipeline(
                 prompt, 
@@ -837,7 +854,7 @@ class QwenImageT2VSampler:
             if not funmodels.get("lora_cache", False):
                 print('Unmerge Lora')
                 for _lora_path, _lora_weight in zip(funmodels.get("loras", []), funmodels.get("strength_model", [])):
-                    pipeline = unmerge_lora(pipeline, _lora_path, _lora_weight, device="cuda", dtype=weight_dtype)
+                    pipeline = unmerge_lora(pipeline, _lora_path, _lora_weight, device=device, dtype=weight_dtype)
         return (image,)   
 
 class QwenImageEditSampler:
@@ -955,7 +972,7 @@ class QwenImageEditSampler:
                         lora_path_before = copy.deepcopy(lora_path_now)
                         pipeline.transformer.load_state_dict(transformer_cpu_cache)
                         for _lora_path, _lora_weight in zip(funmodels.get("loras", []), funmodels.get("strength_model", [])):
-                            pipeline = merge_lora(pipeline, _lora_path, _lora_weight, device="cuda", dtype=weight_dtype)
+                            pipeline = merge_lora(pipeline, _lora_path, _lora_weight, device=device, dtype=weight_dtype)
                    
             else:
                 print('Merge Lora')
@@ -967,7 +984,7 @@ class QwenImageEditSampler:
                     gc.collect()
                 
                 for _lora_path, _lora_weight in zip(funmodels.get("loras", []), funmodels.get("strength_model", [])):
-                    pipeline = merge_lora(pipeline, _lora_path, _lora_weight, device="cuda", dtype=weight_dtype)
+                    pipeline = merge_lora(pipeline, _lora_path, _lora_weight, device=device, dtype=weight_dtype)
 
             image = [to_pil(image) for image in image]
             image = get_image(image[0]) if image is not None else image
@@ -988,5 +1005,5 @@ class QwenImageEditSampler:
             if not funmodels.get("lora_cache", False):
                 print('Unmerge Lora')
                 for _lora_path, _lora_weight in zip(funmodels.get("loras", []), funmodels.get("strength_model", [])):
-                    pipeline = unmerge_lora(pipeline, _lora_path, _lora_weight, device="cuda", dtype=weight_dtype)
+                    pipeline = unmerge_lora(pipeline, _lora_path, _lora_weight, device=device, dtype=weight_dtype)
         return (image,)   
