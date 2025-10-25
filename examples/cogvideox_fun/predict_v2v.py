@@ -25,7 +25,7 @@ from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8, r
 from videox_fun.utils.utils import get_video_to_video_latent, save_videos_grid
 from videox_fun.dist import set_multi_gpus_devices, shard_model
 
-# GPU memory mode, which can be choosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
+# GPU memory mode, which can be chosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
 # model_full_load means that the entire model will be moved to the GPU.
 # 
 # model_full_load_and_qfloat8 means that the entire model will be moved to the GPU,
@@ -94,7 +94,7 @@ device = set_multi_gpus_devices(ulysses_degree, ring_degree)
 transformer = CogVideoXTransformer3DModel.from_pretrained(
     model_name, 
     subfolder="transformer",
-    low_cpu_mem_usage=True if not fsdp_dit else False,
+    low_cpu_mem_usage=True,
     torch_dtype=weight_dtype,
 ).to(weight_dtype)
 
@@ -137,7 +137,7 @@ text_encoder = T5EncoderModel.from_pretrained(
 )
 
 # Get Scheduler
-Choosen_Scheduler = scheduler_dict = {
+Chosen_Scheduler = scheduler_dict = {
     "Euler": EulerDiscreteScheduler,
     "Euler A": EulerAncestralDiscreteScheduler,
     "DPM++": DPMSolverMultistepScheduler, 
@@ -145,7 +145,7 @@ Choosen_Scheduler = scheduler_dict = {
     "DDIM_Cog": CogVideoXDDIMScheduler,
     "DDIM_Origin": DDIMScheduler,
 }[sampler_name]
-scheduler = Choosen_Scheduler.from_pretrained(
+scheduler = Chosen_Scheduler.from_pretrained(
     model_name, 
     subfolder="scheduler"
 )
@@ -201,7 +201,7 @@ else:
 generator = torch.Generator(device=device).manual_seed(seed)
 
 if lora_path is not None:
-    pipeline = merge_lora(pipeline, lora_path, lora_weight, device=device)
+    pipeline = merge_lora(pipeline, lora_path, lora_weight, device=device, dtype=weight_dtype)
 
 video_length = int((video_length - 1) // vae.config.temporal_compression_ratio * vae.config.temporal_compression_ratio) + 1 if video_length != 1 else 1
 latent_frames = (video_length - 1) // vae.config.temporal_compression_ratio + 1
@@ -227,7 +227,7 @@ with torch.no_grad():
     ).videos
 
 if lora_path is not None:
-    pipeline = unmerge_lora(pipeline, lora_path, lora_weight, device=device)
+    pipeline = unmerge_lora(pipeline, lora_path, lora_weight, device=device, dtype=weight_dtype)
 
 def save_results():
     if not os.path.exists(save_path):

@@ -26,7 +26,7 @@ from videox_fun.utils.utils import (filter_kwargs, get_image_to_video_latent,
 from videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
 from videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 
-# GPU memory mode, which can be choosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
+# GPU memory mode, which can be chosen in [model_full_load, model_full_load_and_qfloat8, model_cpu_offload, model_cpu_offload_and_qfloat8, sequential_cpu_offload].
 # model_full_load means that the entire model will be moved to the GPU.
 # 
 # model_full_load_and_qfloat8 means that the entire model will be moved to the GPU,
@@ -123,7 +123,7 @@ config = OmegaConf.load(config_path)
 transformer = WanTransformer3DModel.from_pretrained(
     os.path.join(model_name, config['transformer_additional_kwargs'].get('transformer_subpath', 'transformer')),
     transformer_additional_kwargs=OmegaConf.to_container(config['transformer_additional_kwargs']),
-    low_cpu_mem_usage=True if not fsdp_dit else False,
+    low_cpu_mem_usage=True,
     torch_dtype=weight_dtype,
 )
 
@@ -178,15 +178,15 @@ clip_image_encoder = CLIPModel.from_pretrained(
 clip_image_encoder = clip_image_encoder.eval()
 
 # Get Scheduler
-Choosen_Scheduler = scheduler_dict = {
+Chosen_Scheduler = scheduler_dict = {
     "Flow": FlowMatchEulerDiscreteScheduler,
     "Flow_Unipc": FlowUniPCMultistepScheduler,
     "Flow_DPM++": FlowDPMSolverMultistepScheduler,
 }[sampler_name]
 if sampler_name == "Flow_Unipc" or sampler_name == "Flow_DPM++":
     config['scheduler_kwargs']['shift'] = 1
-scheduler = Choosen_Scheduler(
-    **filter_kwargs(Choosen_Scheduler, OmegaConf.to_container(config['scheduler_kwargs']))
+scheduler = Chosen_Scheduler(
+    **filter_kwargs(Chosen_Scheduler, OmegaConf.to_container(config['scheduler_kwargs']))
 )
 
 # Get Pipeline
@@ -246,7 +246,7 @@ if cfg_skip_ratio is not None:
 generator = torch.Generator(device=device).manual_seed(seed)
 
 if lora_path is not None:
-    pipeline = merge_lora(pipeline, lora_path, lora_weight)
+    pipeline = merge_lora(pipeline, lora_path, lora_weight, device=device, dtype=weight_dtype)
 
 with torch.no_grad():
     video_length = int((video_length - 1) // vae.config.temporal_compression_ratio * vae.config.temporal_compression_ratio) + 1 if video_length != 1 else 1
@@ -274,7 +274,7 @@ with torch.no_grad():
     ).videos
 
 if lora_path is not None:
-    pipeline = unmerge_lora(pipeline, lora_path, lora_weight)
+    pipeline = unmerge_lora(pipeline, lora_path, lora_weight, device=device, dtype=weight_dtype)
 
 def save_results():
     if not os.path.exists(save_path):

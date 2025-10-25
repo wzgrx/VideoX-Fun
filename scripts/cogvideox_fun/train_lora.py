@@ -71,7 +71,7 @@ from videox_fun.models import (AutoencoderKLCogVideoX,
 from videox_fun.pipeline import (CogVideoXFunPipeline,
                                 CogVideoXFunControlPipeline,
                                 CogVideoXFunInpaintPipeline)
-from videox_fun.pipeline.pipeline_CogVideoXFuninpaint import (
+from videox_fun.pipeline.pipeline_cogvideox_fun_inpaint import (
     add_noise_to_reference_video, get_3d_rotary_pos_embed,
     get_resize_crop_region_for_grid)
 from videox_fun.utils.discrete_sampler import DiscreteSampling
@@ -581,6 +581,9 @@ def parse_args():
     )
     parser.add_argument(
         "--training_with_video_token_length", action="store_true", help="The training stage of the model in training.",
+    )
+    parser.add_argument(
+        "--auto_tile_batch_size", action="store_true", help="Whether to auto tile batch size.",
     )
     parser.add_argument(
         "--noise_share_in_frames", action="store_true", help="Whether enable noise share in frames."
@@ -1177,7 +1180,10 @@ def main():
     # The trackers initializes automatically on the main process.
     if accelerator.is_main_process:
         tracker_config = dict(vars(args))
-        tracker_config.pop("validation_prompts")
+        keys_to_pop = [k for k, v in tracker_config.items() if isinstance(v, list)]
+        for k in keys_to_pop:
+            tracker_config.pop(k)
+            print(f"Removed tracker_config['{k}']")
         accelerator.init_trackers(args.tracker_project_name, tracker_config)
 
     # Function for unwrapping if model was compiled with `torch.compile`.
@@ -1338,7 +1344,7 @@ def main():
                 pixel_values = batch["pixel_values"].to(weight_dtype)
 
                 # Increase the batch size when the length of the latent sequence of the current sample is small
-                if args.training_with_video_token_length:
+                if args.auto_tile_batch_size and args.training_with_video_token_length:
                     if args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 16 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
                         pixel_values = torch.tile(pixel_values, (4, 1, 1, 1, 1))
                         if args.enable_text_encoder_in_dataloader:
@@ -1358,7 +1364,7 @@ def main():
                     mask_pixel_values = batch["mask_pixel_values"].to(weight_dtype)
                     mask = batch["mask"].to(weight_dtype)
                     # Increase the batch size when the length of the latent sequence of the current sample is small
-                    if args.training_with_video_token_length:
+                    if args.auto_tile_batch_size and args.training_with_video_token_length:
                         if args.video_sample_n_frames * args.token_sample_size * args.token_sample_size // 16 >= pixel_values.size()[1] * pixel_values.size()[3] * pixel_values.size()[4]:
                             mask_pixel_values = torch.tile(mask_pixel_values, (4, 1, 1, 1, 1))
                             mask = torch.tile(mask, (4, 1, 1, 1, 1))
@@ -1652,6 +1658,9 @@ def main():
                                 for removing_checkpoint in removing_checkpoints:
                                     removing_checkpoint = os.path.join(args.output_dir, removing_checkpoint)
                                     shutil.rmtree(removing_checkpoint)
+                        gc.collect()
+                        torch.cuda.empty_cache()
+                        torch.cuda.ipc_collect()
                         if not args.save_state:
                             safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
                             save_model(safetensor_save_path, accelerator.unwrap_model(network))
@@ -1697,13 +1706,17 @@ def main():
 
     # Create the pipeline using the trained modules and save it.
     accelerator.wait_for_everyone()
-    if accelerator.is_main_process:
-        safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
-        accelerator_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-        save_model(safetensor_save_path, accelerator.unwrap_model(network))
-        if args.save_state:
+    if args.use_deepspeed or accelerator.is_main_process:
+        gc.collect()
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
+        if not args.save_state:
+            safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
+            save_model(safetensor_save_path, accelerator.unwrap_model(network))
+        else:
+            accelerator_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
             accelerator.save_state(accelerator_save_path)
-        logger.info(f"Saved state to {accelerator_save_path}")
+            logger.info(f"Saved state to {accelerator_save_path}")
 
     accelerator.end_training()
 

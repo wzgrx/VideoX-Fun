@@ -156,7 +156,10 @@ def precalculate_safetensors_hashes(tensors, metadata):
 
 
 class LoRANetwork(torch.nn.Module):
-    TRANSFORMER_TARGET_REPLACE_MODULE = ["CogVideoXTransformer3DModel", "WanTransformer3DModel"]
+    TRANSFORMER_TARGET_REPLACE_MODULE = [
+        "CogVideoXTransformer3DModel", "WanTransformer3DModel", \
+        "Wan2_2Transformer3DModel", "FluxTransformer2DModel", "QwenImageTransformer2DModel"
+    ]
     TEXT_ENCODER_TARGET_REPLACE_MODULE = ["T5LayerSelfAttention", "T5LayerFF", "BertEncoder", "T5SelfAttention", "T5CrossAttention"]
     LORA_PREFIX_TRANSFORMER = "lora_unet"
     LORA_PREFIX_TEXT_ENCODER = "lora_te"
@@ -365,15 +368,29 @@ def create_network(
     )
     return network
 
-def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float32, state_dict=None, transformer_only=False):
+def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float32, state_dict=None, transformer_only=False, sub_transformer_name="transformer"):
     LORA_PREFIX_TRANSFORMER = "lora_unet"
     LORA_PREFIX_TEXT_ENCODER = "lora_te"
     if state_dict is None:
-        state_dict = load_file(lora_path, device=device)
+        state_dict = load_file(lora_path)
     else:
         state_dict = state_dict
     updates = defaultdict(dict)
     for key, value in state_dict.items():
+        if "diffusion_model" in key:
+            key = key.replace("diffusion_model.", "lora_unet__")
+            key = key.replace("blocks.", "blocks_")
+            key = key.replace(".self_attn.", "_self_attn_")
+            key = key.replace(".cross_attn.", "_cross_attn_")
+            key = key.replace(".ffn.", "_ffn_")
+        if "lora_A" in key or "lora_B" in key:
+            key = "lora_unet__" + key
+            key = key.replace("blocks.", "blocks_")
+            key = key.replace(".self_attn.", "_self_attn_")
+            key = key.replace(".cross_attn.", "_cross_attn_")
+            key = key.replace(".ffn.", "_ffn_")
+            key = key.replace(".lora_A.default.", ".lora_down.")
+            key = key.replace(".lora_B.default.", ".lora_up.")
         layer, elem = key.split('.', 1)
         updates[layer][elem] = value
 
@@ -393,30 +410,60 @@ def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float3
                 curr_layer = pipeline.text_encoder
         else:
             layer_infos = layer.split(LORA_PREFIX_TRANSFORMER + "_")[-1].split("_")
-            curr_layer = pipeline.transformer
+            curr_layer = getattr(pipeline, sub_transformer_name)
 
         try:
             curr_layer = curr_layer.__getattr__("_".join(layer_infos[1:]))
         except Exception:
             temp_name = layer_infos.pop(0)
-            while len(layer_infos) > -1:
-                try:
-                    curr_layer = curr_layer.__getattr__(temp_name + "_" + "_".join(layer_infos))
-                    break
-                except Exception:
+            try:
+                while len(layer_infos) > -1:
                     try:
-                        curr_layer = curr_layer.__getattr__(temp_name)
-                        if len(layer_infos) > 0:
-                            temp_name = layer_infos.pop(0)
-                        elif len(layer_infos) == 0:
-                            break
+                        curr_layer = curr_layer.__getattr__(temp_name + "_" + "_".join(layer_infos))
+                        break
                     except Exception:
-                        if len(layer_infos) == 0:
-                            print('Error loading layer')
-                        if len(temp_name) > 0:
-                            temp_name += "_" + layer_infos.pop(0)
-                        else:
-                            temp_name = layer_infos.pop(0)
+                        try:
+                            curr_layer = curr_layer.__getattr__(temp_name)
+                            if len(layer_infos) > 0:
+                                temp_name = layer_infos.pop(0)
+                            elif len(layer_infos) == 0:
+                                break
+                        except Exception:
+                            if len(layer_infos) == 0:
+                                print(f'Error loading layer in front search: {layer}. Try it in back search.')
+                            if len(temp_name) > 0:
+                                temp_name += "_" + layer_infos.pop(0)
+                            else:
+                                temp_name = layer_infos.pop(0)
+            except Exception:
+                if "lora_te" in layer:
+                    if transformer_only:
+                        continue
+                    else:
+                        layer_infos = layer.split(LORA_PREFIX_TEXT_ENCODER + "_")[-1].split("_")
+                        curr_layer = pipeline.text_encoder
+                else:
+                    layer_infos = layer.split(LORA_PREFIX_TRANSFORMER + "_")[-1].split("_")
+                    curr_layer = getattr(pipeline, sub_transformer_name)
+
+                len_layer_infos = len(layer_infos)
+                start_index     = 0 if len_layer_infos >= 1 and len(layer_infos[0]) > 0 else 1
+                end_indx        = len_layer_infos
+
+                error_flag      = False if len_layer_infos >= 1 else True
+                while start_index < len_layer_infos:
+                    try:
+                        if start_index >= end_indx:
+                            print(f'Error loading layer in back search: {layer}')
+                            error_flag = True
+                            break
+                        curr_layer = curr_layer.__getattr__("_".join(layer_infos[start_index:end_indx]))
+                        start_index = end_indx
+                        end_indx = len_layer_infos
+                    except Exception:
+                        end_indx -= 1
+                if error_flag:
+                    continue
 
         origin_dtype = curr_layer.weight.data.dtype
         origin_device = curr_layer.weight.data.device
@@ -443,14 +490,28 @@ def merge_lora(pipeline, lora_path, multiplier, device='cpu', dtype=torch.float3
     return pipeline
 
 # TODO: Refactor with merge_lora.
-def unmerge_lora(pipeline, lora_path, multiplier=1, device="cpu", dtype=torch.float32):
+def unmerge_lora(pipeline, lora_path, multiplier=1, device="cpu", dtype=torch.float32, sub_transformer_name="transformer"):
     """Unmerge state_dict in LoRANetwork from the pipeline in diffusers."""
     LORA_PREFIX_UNET = "lora_unet"
     LORA_PREFIX_TEXT_ENCODER = "lora_te"
-    state_dict = load_file(lora_path, device=device)
+    state_dict = load_file(lora_path)
 
     updates = defaultdict(dict)
     for key, value in state_dict.items():
+        if "diffusion_model" in key:
+            key = key.replace("diffusion_model.", "lora_unet__")
+            key = key.replace("blocks.", "blocks_")
+            key = key.replace(".self_attn.", "_self_attn_")
+            key = key.replace(".cross_attn.", "_cross_attn_")
+            key = key.replace(".ffn.", "_ffn_")
+        if "lora_A" in key or "lora_B" in key:
+            key = "lora_unet__" + key
+            key = key.replace("blocks.", "blocks_")
+            key = key.replace(".self_attn.", "_self_attn_")
+            key = key.replace(".cross_attn.", "_cross_attn_")
+            key = key.replace(".ffn.", "_ffn_")
+            key = key.replace(".lora_A.default.", ".lora_down.")
+            key = key.replace(".lora_B.default.", ".lora_up.")
         layer, elem = key.split('.', 1)
         updates[layer][elem] = value
 
@@ -466,30 +527,57 @@ def unmerge_lora(pipeline, lora_path, multiplier=1, device="cpu", dtype=torch.fl
             curr_layer = pipeline.text_encoder
         else:
             layer_infos = layer.split(LORA_PREFIX_UNET + "_")[-1].split("_")
-            curr_layer = pipeline.transformer
+            curr_layer = getattr(pipeline, sub_transformer_name)
 
         try:
             curr_layer = curr_layer.__getattr__("_".join(layer_infos[1:]))
         except Exception:
             temp_name = layer_infos.pop(0)
-            while len(layer_infos) > -1:
-                try:
-                    curr_layer = curr_layer.__getattr__(temp_name + "_" + "_".join(layer_infos))
-                    break
-                except Exception:
+            try:
+                while len(layer_infos) > -1:
                     try:
-                        curr_layer = curr_layer.__getattr__(temp_name)
-                        if len(layer_infos) > 0:
-                            temp_name = layer_infos.pop(0)
-                        elif len(layer_infos) == 0:
-                            break
+                        curr_layer = curr_layer.__getattr__(temp_name + "_" + "_".join(layer_infos))
+                        break
                     except Exception:
-                        if len(layer_infos) == 0:
-                            print('Error loading layer')
-                        if len(temp_name) > 0:
-                            temp_name += "_" + layer_infos.pop(0)
-                        else:
-                            temp_name = layer_infos.pop(0)
+                        try:
+                            curr_layer = curr_layer.__getattr__(temp_name)
+                            if len(layer_infos) > 0:
+                                temp_name = layer_infos.pop(0)
+                            elif len(layer_infos) == 0:
+                                break
+                        except Exception:
+                            if len(layer_infos) == 0:
+                                print(f'Error loading layer in front search: {layer}. Try it in back search.')
+                            if len(temp_name) > 0:
+                                temp_name += "_" + layer_infos.pop(0)
+                            else:
+                                temp_name = layer_infos.pop(0)
+            except Exception:
+                if "lora_te" in layer:
+                    layer_infos = layer.split(LORA_PREFIX_TEXT_ENCODER + "_")[-1].split("_")
+                    curr_layer = pipeline.text_encoder
+                else:
+                    layer_infos = layer.split(LORA_PREFIX_UNET + "_")[-1].split("_")
+                    curr_layer = getattr(pipeline, sub_transformer_name)
+                len_layer_infos = len(layer_infos)
+
+                start_index     = 0 if len_layer_infos >= 1 and len(layer_infos[0]) > 0 else 1
+                end_indx        = len_layer_infos
+
+                error_flag      = False if len_layer_infos >= 1 else True
+                while start_index < len_layer_infos:
+                    try:
+                        if start_index >= end_indx:
+                            print(f'Error loading layer in back search: {layer}')
+                            error_flag = True
+                            break
+                        curr_layer = curr_layer.__getattr__("_".join(layer_infos[start_index:end_indx]))
+                        start_index = end_indx
+                        end_indx = len_layer_infos
+                    except Exception:
+                        end_indx -= 1
+                if error_flag:
+                    continue
 
         origin_dtype = curr_layer.weight.data.dtype
         origin_device = curr_layer.weight.data.device

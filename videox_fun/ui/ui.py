@@ -79,14 +79,21 @@ def create_fake_model_checkpoints(model_name, visible):
         )
     return diffusion_transformer_dropdown
 
-def create_finetune_models_checkpoints(controller, visible):
+def create_finetune_models_checkpoints(controller, visible, add_checkpoint_2=False):
     with gr.Row(visible=visible):
         base_model_dropdown = gr.Dropdown(
             label="Select base Dreambooth model (选择基模型[非必需])",
-            choices=controller.personalized_model_list,
+            choices=["none"] + controller.personalized_model_list,
             value="none",
             interactive=True,
         )
+        if add_checkpoint_2:
+            base_model_2_dropdown = gr.Dropdown(
+                label="Select base Dreambooth model (选择第二个基模型[非必需])",
+                choices=["none"] + controller.personalized_model_list,
+                value="none",
+                interactive=True,
+            )
         
         lora_model_dropdown = gr.Dropdown(
             label="Select LoRA model (选择LoRA模型[非必需])",
@@ -94,6 +101,13 @@ def create_finetune_models_checkpoints(controller, visible):
             value="none",
             interactive=True,
         )
+        if add_checkpoint_2:
+            lora_model_2_dropdown = gr.Dropdown(
+            label="Select LoRA model (选择LoRA模型[非必需])",
+                choices=["none"] + controller.personalized_model_list,
+                value="none",
+                interactive=True,
+            )
 
         lora_alpha_slider = gr.Slider(label="LoRA alpha (LoRA权重)", value=0.55, minimum=0, maximum=2, interactive=True)
         
@@ -106,7 +120,11 @@ def create_finetune_models_checkpoints(controller, visible):
             ]
         personalized_refresh_button.click(fn=update_personalized_model, inputs=[], outputs=[base_model_dropdown, lora_model_dropdown])
 
-    return base_model_dropdown, lora_model_dropdown, lora_alpha_slider, personalized_refresh_button
+    if not add_checkpoint_2:
+        return base_model_dropdown, lora_model_dropdown, lora_alpha_slider, personalized_refresh_button
+    else:
+        return [base_model_dropdown, base_model_2_dropdown], [lora_model_dropdown, lora_model_2_dropdown], \
+            lora_alpha_slider, personalized_refresh_button
 
 def create_fake_finetune_models_checkpoints(visible):
     with gr.Row():
@@ -143,7 +161,7 @@ def create_teacache_params(
 ):
     enable_teacache = gr.Checkbox(label="Enable TeaCache", value=enable_teacache)
     teacache_threshold = gr.Slider(0.00, 0.25, value=teacache_threshold, step=0.01, label="TeaCache Threshold")
-    num_skip_start_steps = gr.Slider(0, 10, value=num_skip_start_steps, step=1, label="Number of Skip Start Steps")
+    num_skip_start_steps = gr.Slider(0, 10, value=num_skip_start_steps, step=5, label="Number of Skip Start Steps")
     teacache_offload = gr.Checkbox(label="Offload TeaCache to CPU", value=teacache_offload)
     return enable_teacache, teacache_threshold, num_skip_start_steps, teacache_offload
 
@@ -318,3 +336,23 @@ def create_ui_outputs():
             interactive=False
     )
     return result_image, result_video, infer_progress
+
+def create_config(controller):
+    gr.Markdown(
+        """
+        ### Config Path (配置文件路径)
+        """
+    )
+    with gr.Row():
+        config_dropdown = gr.Dropdown(
+            label="Config Path (配置文件路径)",
+            choices=controller.config_list,
+            value=controller.config_path,
+            interactive=True,
+        )
+        config_refresh_button = gr.Button(value="\U0001F503", elem_classes="toolbutton")
+        def refresh_config():
+            controller.refresh_config()
+            return gr.update(choices=controller.config_list)
+        config_refresh_button.click(fn=refresh_config, inputs=[], outputs=[config_dropdown])
+    return config_dropdown, config_refresh_button

@@ -1049,7 +1049,10 @@ def main():
     # The trackers initializes automatically on the main process.
     if accelerator.is_main_process:
         tracker_config = dict(vars(args))
-        tracker_config.pop("validation_prompts")
+        keys_to_pop = [k for k, v in tracker_config.items() if isinstance(v, list)]
+        for k in keys_to_pop:
+            tracker_config.pop(k)
+            print(f"Removed tracker_config['{k}']")
         accelerator.init_trackers(args.tracker_project_name, tracker_config)
 
     # Function for unwrapping if model was compiled with `torch.compile`.
@@ -1355,6 +1358,9 @@ def main():
                                             removing_checkpoint = os.path.join(args.output_dir, removing_checkpoint)
                                             shutil.rmtree(removing_checkpoint)
                                 
+                                gc.collect()
+                                torch.cuda.empty_cache()
+                                torch.cuda.ipc_collect()
                                 if not args.save_state:
                                     safetensor_save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.safetensors")
                                     save_model(safetensor_save_path, accelerator.unwrap_model(network))
