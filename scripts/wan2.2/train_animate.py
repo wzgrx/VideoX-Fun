@@ -680,38 +680,6 @@ def parse_args():
         ),
     )
     parser.add_argument(
-        "--train_mode",
-        type=str,
-        default="control",
-        help=(
-            'The format of training data. Support `"control"`'
-            ' (default), `"control_ref"`, `"control_camera_ref"`.'
-        ),
-    )
-    parser.add_argument(
-        "--control_ref_image",
-        type=str,
-        default="first_frame",
-        help=(
-            'The format of training data. Support `"first_frame"`'
-            ' (default), `"random"`.'
-        ),
-    )
-    parser.add_argument(
-        "--add_full_ref_image_in_self_attention",
-        action="store_true",
-        help=(
-            'Whether enable add full ref image in self attention.'
-        ),
-    )
-    parser.add_argument(
-        "--add_inpaint_info",
-        action="store_true",
-        help=(
-            'Whether enable add inpaint info in self attention.'
-        ),
-    )
-    parser.add_argument(
         "--weighting_scheme",
         type=str,
         default="none",
@@ -1464,7 +1432,7 @@ def main():
     # Move text_encode and vae to gpu and cast to weight_dtype
     vae.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
     if not args.enable_text_encoder_in_dataloader:
-        text_encoder.to(accelerator.device if not args.low_vram else "cpu")
+        text_encoder.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
     clip_image_encoder.to(accelerator.device if not args.low_vram else "cpu", dtype=weight_dtype)
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.

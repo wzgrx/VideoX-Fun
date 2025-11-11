@@ -46,7 +46,6 @@ class Wan2_2Transformer3DModel_Animate(WanTransformer3DModel):
         cross_attn_norm=True,
         eps=1e-6,
         motion_encoder_dim=512,
-        use_context_parallel=False,
         use_img_emb=True
     ):
         model_type = "i2v"   # TODO: Hard code for both preview and official versions.
@@ -54,7 +53,6 @@ class Wan2_2Transformer3DModel_Animate(WanTransformer3DModel):
                          num_heads, num_layers, window_size, qk_norm, cross_attn_norm, eps)
 
         self.motion_encoder_dim = motion_encoder_dim
-        self.use_context_parallel = use_context_parallel
         self.use_img_emb = use_img_emb
 
         self.pose_patch_embedding = nn.Conv3d(
@@ -100,14 +98,13 @@ class Wan2_2Transformer3DModel_Animate(WanTransformer3DModel):
         motion_vec = torch.cat([pad_face, motion_vec], dim=1)
         return x, motion_vec
 
-
     def after_transformer_block(self, block_idx, x, motion_vec, motion_masks=None):
         if block_idx % 5 == 0:
-            adapter_args = [x, motion_vec, motion_masks, self.use_context_parallel]
+            use_context_parallel = self.sp_world_size > 1
+            adapter_args = [x, motion_vec, motion_masks, use_context_parallel, self.all_gather, self.sp_world_size, self.sp_world_rank]
             residual_out = self.face_adapter.fuser_blocks[block_idx // 5](*adapter_args)
             x = residual_out + x
         return x
-
 
     @cfg_skip()
     def forward(
@@ -139,6 +136,8 @@ class Wan2_2Transformer3DModel_Animate(WanTransformer3DModel):
             [torch.tensor(u.shape[2:], dtype=torch.long) for u in x])
         x = [u.flatten(2).transpose(1, 2) for u in x]
         seq_lens = torch.tensor([u.size(1) for u in x], dtype=torch.long)
+        if self.sp_world_size > 1:
+            seq_len = int(math.ceil(seq_len / self.sp_world_size)) * self.sp_world_size
         assert seq_lens.max() <= seq_len
         x = torch.cat([
             torch.cat([u, u.new_zeros(1, seq_len - u.size(1), u.size(2))],
@@ -227,6 +226,7 @@ class Wan2_2Transformer3DModel_Animate(WanTransformer3DModel):
                             t,
                             **ckpt_kwargs,
                         )
+                        x, motion_vec = x.to(dtype), motion_vec.to(dtype)
                         x = self.after_transformer_block(idx, x, motion_vec)
                     else:
                         # arguments
@@ -241,6 +241,7 @@ class Wan2_2Transformer3DModel_Animate(WanTransformer3DModel):
                             t=t  
                         )
                         x = block(x, **kwargs)
+                        x, motion_vec = x.to(dtype), motion_vec.to(dtype)
                         x = self.after_transformer_block(idx, x, motion_vec)
                     
                 if cond_flag:
@@ -270,6 +271,7 @@ class Wan2_2Transformer3DModel_Animate(WanTransformer3DModel):
                         t,
                         **ckpt_kwargs,
                     )
+                    x, motion_vec = x.to(dtype), motion_vec.to(dtype)
                     x = self.after_transformer_block(idx, x, motion_vec)
                 else:
                     # arguments
@@ -284,6 +286,7 @@ class Wan2_2Transformer3DModel_Animate(WanTransformer3DModel):
                         t=t  
                     )
                     x = block(x, **kwargs)
+                    x, motion_vec = x.to(dtype), motion_vec.to(dtype)
                     x = self.after_transformer_block(idx, x, motion_vec)
 
         # head

@@ -530,7 +530,7 @@ class ImageVideoControlDataset(Dataset):
                 shuffle(subject_id)
                 subject_images = []
                 for i in range(min(len(subject_id), 4)):
-                    subject_image = Image.open(subject_id[i])
+                    subject_image = Image.open(subject_id[i]).convert('RGB')
                     width, height = subject_image.size
                     total_pixels = width * height
 
@@ -622,3 +622,36 @@ class ImageVideoSafetensorsDataset(Dataset):
             path = os.path.join(self.data_root, self.dataset[idx]["file_path"])
         state_dict = load_file(path)
         return state_dict
+
+
+class TextDataset(Dataset):
+    def __init__(self, ann_path, text_drop_ratio=0.0):
+        print(f"loading annotations from {ann_path} ...")
+        with open(ann_path, 'r') as f:
+            self.dataset = json.load(f)
+        self.length = len(self.dataset)
+        print(f"data scale: {self.length}")
+        self.text_drop_ratio = text_drop_ratio
+
+    def __len__(self):
+        return self.length
+
+    def __getitem__(self, idx):
+        while True:
+            try:
+                item = self.dataset[idx]
+                text = item['text']
+
+                # Randomly drop text (for classifier-free guidance)
+                if random.random() < self.text_drop_ratio:
+                    text = ''
+
+                sample = {
+                    "text": text,
+                    "idx": idx
+                }
+                return sample
+
+            except Exception as e:
+                print(f"Error at index {idx}: {e}, retrying with random index...")
+                idx = np.random.randint(0, self.length - 1)

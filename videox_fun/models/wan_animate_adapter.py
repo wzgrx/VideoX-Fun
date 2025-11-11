@@ -4,6 +4,7 @@ from typing import Optional, Tuple
 
 import torch
 import torch.nn.functional as F
+import numpy as np
 from einops import rearrange
 from torch import nn
 
@@ -337,8 +338,11 @@ class FaceBlock(nn.Module):
         motion_vec: torch.Tensor,
         motion_mask: Optional[torch.Tensor] = None,
         use_context_parallel=False,
+        all_gather=None,
+        sp_world_size=1,
+        sp_world_rank=0,
     ) -> torch.Tensor:
-        
+        dtype = x.dtype
         B, T, N, C = motion_vec.shape
         T_comp = T
 
@@ -358,10 +362,17 @@ class FaceBlock(nn.Module):
         k = rearrange(k, "B L N H D -> (B L) N H D")  
         v = rearrange(v, "B L N H D -> (B L) N H D") 
 
-        # if use_context_parallel:
-        #     q = gather_forward(q, dim=1)
+        if use_context_parallel:
+            q = all_gather(q, dim=1)
 
+            length = int(np.floor(q.size()[1] / T_comp) * T_comp)
+            origin_length = q.size()[1]
+            if origin_length > length:
+                q_pad = q[:, length:]
+                q = q[:, :length]
+            
         q = rearrange(q, "B (L S) H D -> (B L) S H D", L=T_comp)  
+        q, k, v = q.to(dtype), k.to(dtype), v.to(dtype)
         # Compute attention.
         attn = attention(
             q,
@@ -372,8 +383,11 @@ class FaceBlock(nn.Module):
         )
 
         attn = rearrange(attn, "(B L) S C -> B (L S) C", L=T_comp)
-        # if use_context_parallel:
-        #     attn = torch.chunk(attn, get_world_size(), dim=1)[get_rank()]
+        if use_context_parallel:
+            q_pad = rearrange(q_pad, "B L H D -> B L (H D)")  
+            if origin_length > length:
+                attn = torch.cat([attn, q_pad], dim=1)
+            attn = torch.chunk(attn, sp_world_size, dim=1)[sp_world_rank]
 
         output = self.linear2(attn)
 
