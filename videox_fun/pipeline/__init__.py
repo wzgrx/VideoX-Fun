@@ -4,6 +4,7 @@ from .pipeline_cogvideox_fun_inpaint import CogVideoXFunInpaintPipeline
 from .pipeline_fantasy_talking import FantasyTalkingPipeline
 from .pipeline_flux import FluxPipeline
 from .pipeline_flux2 import Flux2Pipeline
+from .pipeline_flux2_control import Flux2ControlPipeline
 from .pipeline_hunyuanvideo import HunyuanVideoPipeline
 from .pipeline_hunyuanvideo_i2v import HunyuanVideoI2VPipeline
 from .pipeline_qwenimage import QwenImagePipeline
@@ -21,6 +22,8 @@ from .pipeline_wan_fun_control import WanFunControlPipeline
 from .pipeline_wan_fun_inpaint import WanFunInpaintPipeline
 from .pipeline_wan_phantom import WanFunPhantomPipeline
 from .pipeline_wan_vace import WanVacePipeline
+from .pipeline_z_image import ZImagePipeline
+from .pipeline_z_image_control import ZImageControlPipeline
 
 WanFunPipeline = WanPipeline
 WanI2VPipeline = WanFunInpaintPipeline

@@ -73,17 +73,15 @@ from videox_fun.data.dataset_image_video import (ImageVideoDataset,
                                                  ImageVideoSampler,
                                                  get_random_mask)
 from videox_fun.dist import set_multi_gpus_devices, shard_model
-from videox_fun.models import (AutoencoderKLFlux2,
-                               CLIPImageProcessor, Mistral3ForConditionalGeneration,
-                               PixtralProcessor, CLIPVisionModelWithProjection,
-                               Flux2Transformer2DModel,
-                               Mistral3ForConditionalGeneration,
+from videox_fun.models import (AutoencoderKL,
+                               CLIPImageProcessor, Qwen3ForCausalLM,
+                               AutoTokenizer, CLIPVisionModelWithProjection,
+                               ZImageTransformer2DModel,
+                               Qwen3ForCausalLM,
                                Qwen2_5_VLForConditionalGeneration,
                                Qwen2Tokenizer, QwenImageTransformer2DModel)
 from videox_fun.pipeline import Flux2Pipeline
 from videox_fun.utils.discrete_sampler import DiscreteSampling
-from videox_fun.utils.lora_utils import (create_network, merge_lora,
-                                         unmerge_lora)
 from videox_fun.utils.utils import get_image_to_video_latent, save_videos_grid
 
 if is_wandb_available():
@@ -187,128 +185,51 @@ def _pack_latents(latents):
 
     return latents
 
-def format_text_input(prompts: List[str], system_message: str = None):
-    # Remove [IMG] tokens from prompts to avoid Pixtral validation issues
-    # when truncation is enabled. The processor counts [IMG] tokens and fails
-    # if the count changes after truncation.
-    cleaned_txt = [prompt.replace("[IMG]", "") for prompt in prompts]
-
-    return [
-        [
-            {
-                "role": "system",
-                "content": [{"type": "text", "text": system_message}],
-            },
-            {"role": "user", "content": [{"type": "text", "text": prompt}]},
-        ]
-        for prompt in cleaned_txt
-    ]
-
-def _get_mistral_3_small_prompt_embeds(
-    text_encoder: Mistral3ForConditionalGeneration,
-    tokenizer: PixtralProcessor,
-    prompt: Union[str, List[str]],
-    dtype: Optional[torch.dtype] = None,
-    device: Optional[torch.device] = None,
-    max_sequence_length: int = 512,
-    # fmt: off
-    system_message: str = "You are an AI that reasons about image descriptions. You give structured responses focusing on object relationships, object attribution and actions without speculation.",
-    # fmt: on
-    hidden_states_layers: List[int] = (10, 20, 30),
-):
-    dtype = text_encoder.dtype if dtype is None else dtype
-    device = text_encoder.device if device is None else device
-
-    prompt = [prompt] if isinstance(prompt, str) else prompt
-
-    # Format input messages
-    messages_batch = format_text_input(prompts=prompt, system_message=system_message)
-
-    # Process all messages at once
-    inputs = tokenizer.apply_chat_template(
-        messages_batch,
-        add_generation_prompt=False,
-        tokenize=True,
-        return_dict=True,
-        return_tensors="pt",
-        padding="max_length",
-        truncation=True,
-        max_length=max_sequence_length,
-    )
-
-    # Move to device
-    input_ids = inputs["input_ids"].to(device)
-    attention_mask = inputs["attention_mask"].to(device)
-
-    # Forward pass through the model
-    output = text_encoder(
-        input_ids=input_ids,
-        attention_mask=attention_mask,
-        output_hidden_states=True,
-        use_cache=False,
-    )
-
-    # Only use outputs from intermediate layers and stack them
-    out = torch.stack([output.hidden_states[k] for k in hidden_states_layers], dim=1)
-    out = out.to(dtype=dtype, device=device)
-
-    batch_size, num_channels, seq_len, hidden_dim = out.shape
-    prompt_embeds = out.permute(0, 2, 1, 3).reshape(batch_size, seq_len, num_channels * hidden_dim)
-
-    return prompt_embeds
-
-def _prepare_text_ids(
-    x: torch.Tensor,  # (B, L, D) or (L, D)
-    t_coord: Optional[torch.Tensor] = None,
-):
-    B, L, _ = x.shape
-    out_ids = []
-
-    for i in range(B):
-        t = torch.arange(1) if t_coord is None else t_coord[i]
-        h = torch.arange(1)
-        w = torch.arange(1)
-        l = torch.arange(L)
-
-        coords = torch.cartesian_prod(t, h, w, l)
-        out_ids.append(coords)
-
-    return torch.stack(out_ids)
-
 def encode_prompt(
     prompt: Union[str, List[str]],
     device: Optional[torch.device] = None,
-    text_encoder=None, 
-    tokenizer=None, 
-    num_images_per_prompt: int = 1,
-    prompt_embeds: Optional[torch.Tensor] = None,
+    text_encoder = None, 
+    tokenizer = None,
     max_sequence_length: int = 512,
-    text_encoder_out_layers: Tuple[int] = (10, 20, 30),
-    system_message = "You are an AI that reasons about image descriptions. You give structured responses focusing on object relationships, object attribution and actions without speculation."
-):
-    if prompt is None:
-        prompt = ""
+) -> List[torch.FloatTensor]:
+    if isinstance(prompt, str):
+        prompt = [prompt]
 
-    prompt = [prompt] if isinstance(prompt, str) else prompt
-
-    if prompt_embeds is None:
-        prompt_embeds = _get_mistral_3_small_prompt_embeds(
-            text_encoder=text_encoder,
-            tokenizer=tokenizer,
-            prompt=prompt,
-            device=device,
-            max_sequence_length=max_sequence_length,
-            system_message=system_message,
-            hidden_states_layers=text_encoder_out_layers,
+    for i, prompt_item in enumerate(prompt):
+        messages = [
+            {"role": "user", "content": prompt_item},
+        ]
+        prompt_item = tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=True,
         )
+        prompt[i] = prompt_item
 
-    batch_size, seq_len, _ = prompt_embeds.shape
-    prompt_embeds = prompt_embeds.repeat(1, num_images_per_prompt, 1)
-    prompt_embeds = prompt_embeds.view(batch_size * num_images_per_prompt, seq_len, -1)
+    text_inputs = tokenizer(
+        prompt,
+        padding="max_length",
+        max_length=max_sequence_length,
+        truncation=True,
+        return_tensors="pt",
+    )
 
-    text_ids = _prepare_text_ids(prompt_embeds)
-    text_ids = text_ids.to(device)
-    return prompt_embeds, text_ids
+    text_input_ids = text_inputs.input_ids.to(device)
+    prompt_masks = text_inputs.attention_mask.to(device).bool()
+
+    prompt_embeds = text_encoder(
+        input_ids=text_input_ids,
+        attention_mask=prompt_masks,
+        output_hidden_states=True,
+    ).hidden_states[-2]
+
+    embeddings_list = []
+
+    for i in range(len(prompt_embeds)):
+        embeddings_list.append(prompt_embeds[i][prompt_masks[i]])
+
+    return embeddings_list
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 check_min_version("0.18.0.dev0")
@@ -319,7 +240,7 @@ def log_validation(vae, text_encoder, tokenizer, transformer3d, network, args, a
     try:
         logger.info("Running validation... ")
 
-        transformer3d_val = Flux2Transformer2DModel.from_pretrained(
+        transformer3d_val = ZImageTransformer2DModel.from_pretrained(
             args.pretrained_model_name_or_path, subfolder="transformer", torch_dtype=weight_dtype,
             low_cpu_mem_usage=True,
         ).to(weight_dtype)
@@ -880,7 +801,7 @@ def main():
     )
 
     # Get Tokenizer
-    tokenizer = PixtralProcessor.from_pretrained(
+    tokenizer = AutoTokenizer.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="tokenizer"
     )
 
@@ -901,25 +822,23 @@ def main():
     #
     # For now the following workaround will partially support Deepspeed ZeRO-3, by excluding the 2
     # frozen models from being partitioned during `zero.Init` which gets called during
-    # `from_pretrained` So Mistral3ForConditionalGeneration and AutoencoderKLFlux2 will not enjoy the parameter sharding
+    # `from_pretrained` So Qwen3ForCausalLM and AutoencoderKL will not enjoy the parameter sharding
     # across multiple gpus and only UNet2DConditionModel will get ZeRO sharded.
     with ContextManagers(deepspeed_zero_init_disabled_context_manager()):
         # Get Text encoder
-        text_encoder = Mistral3ForConditionalGeneration.from_pretrained(
+        text_encoder = Qwen3ForCausalLM.from_pretrained(
             args.pretrained_model_name_or_path, subfolder="text_encoder", torch_dtype=weight_dtype
         )
         text_encoder = text_encoder.eval()
         # Get Vae
-        vae = AutoencoderKLFlux2.from_pretrained(
+        vae = AutoencoderKL.from_pretrained(
             args.pretrained_model_name_or_path, 
             subfolder="vae"
         ).to(weight_dtype)
         vae.eval()
-        latents_bn_mean = vae.bn.running_mean.view(1, -1, 1, 1).to(accelerator.device, weight_dtype)
-        latents_bn_std = torch.sqrt(vae.bn.running_var.view(1, -1, 1, 1) + vae.config.batch_norm_eps).to(accelerator.device, weight_dtype)
         
     # Get Transformer
-    transformer3d = Flux2Transformer2DModel.from_pretrained(
+    transformer3d = ZImageTransformer2DModel.from_pretrained(
         args.pretrained_model_name_or_path, 
         subfolder="transformer",
         torch_dtype=weight_dtype,
@@ -1270,14 +1189,13 @@ def main():
 
             # Encode prompts when enable_text_encoder_in_dataloader=True
             if args.enable_text_encoder_in_dataloader:
-                prompt_embeds, text_ids = encode_prompt(
+                prompt_embeds = encode_prompt(
                     batch['text'], device="cpu",
                     text_encoder=text_encoder, 
                     tokenizer=tokenizer,
                 )
 
                 new_examples['prompt_embeds'] = prompt_embeds
-                new_examples['text_ids'] = text_ids
 
             return new_examples
 
@@ -1335,14 +1253,14 @@ def main():
         from functools import partial
 
         from videox_fun.dist import set_multi_gpus_devices, shard_model
-        shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype, module_to_wrapper=list(transformer3d.transformer_blocks) + list(transformer3d.single_transformer_blocks))
+        shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype, module_to_wrapper=list(transformer3d.layers))
         transformer3d = shard_fn(transformer3d)
 
     if fsdp_stage != 0 or zero_stage != 0:
         from functools import partial
 
         from videox_fun.dist import set_multi_gpus_devices, shard_model
-        shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype, module_to_wrapper=text_encoder.language_model.layers)
+        shard_fn = partial(shard_model, device_id=accelerator.device, param_dtype=weight_dtype, module_to_wrapper=text_encoder.model.layers)
         text_encoder = shard_fn(text_encoder)
 
     # Move text_encode and vae to gpu and cast to weight_dtype
@@ -1440,7 +1358,7 @@ def main():
         disable=not accelerator.is_local_main_process,
     )
 
-    if args.multi_stream:
+    if args.multi_stream and args.train_mode != "normal":
         # create extra cuda streams to speedup inpaint vae computation
         vae_stream_1 = torch.cuda.Stream()
         vae_stream_2 = torch.cuda.Stream()
@@ -1490,9 +1408,9 @@ def main():
                     if vae_stream_1 is not None:
                         vae_stream_1.wait_stream(torch.cuda.current_stream())
                         with torch.cuda.stream(vae_stream_1):
-                            latents = _batch_encode_vae(pixel_values)
+                            latents = _batch_encode_vae(pixel_values).unsqueeze(2)
                     else:
-                        latents = _batch_encode_vae(pixel_values)
+                        latents = _batch_encode_vae(pixel_values).unsqueeze(2)
 
                 # wait for latents = vae.encode(pixel_values) to complete
                 if vae_stream_1 is not None:
@@ -1506,10 +1424,9 @@ def main():
 
                 if args.enable_text_encoder_in_dataloader:
                     prompt_embeds = batch['prompt_embeds'].to(dtype=latents.dtype, device=accelerator.device)
-                    text_ids = batch['text_ids']
                 else:
                     with torch.no_grad():
-                        prompt_embeds, text_ids = encode_prompt(
+                        prompt_embeds = encode_prompt(
                             batch['text'], device=accelerator.device,
                             text_encoder=text_encoder, 
                             tokenizer=tokenizer,
@@ -1519,16 +1436,9 @@ def main():
                     text_encoder.to('cpu')
                     torch.cuda.empty_cache()
 
-                bsz, channel, height, width = latents.size()
-                latents = _patchify_latents(latents)
-                latent_image_ids = _prepare_latent_ids(latents)
-                latents = ((latents - latents_bn_mean) / latents_bn_std).to(dtype=weight_dtype)
-                latents = _pack_latents(latents)
-
+                bsz, channel, f, height, width = latents.size()
+                latents = ((latents - vae.config.shift_factor) * vae.config.scaling_factor).to(dtype=weight_dtype)
                 noise = torch.randn(latents.size(), device=latents.device, generator=torch_rng, dtype=weight_dtype)
-                # handle guidance
-                guidance = torch.tensor([args.guidance_scale], device=accelerator.device)
-                guidance = guidance.expand(latents.shape[0])
 
                 if not args.uniform_sampling:
                     u = compute_density_for_timestep_sampling(
@@ -1546,7 +1456,6 @@ def main():
                     indices = idx_sampling(bsz, generator=torch_rng, device=latents.device)
                     indices = indices.long().cpu()
 
-                sigmas = np.linspace(1.0, 1 / args.train_sampling_steps, args.train_sampling_steps)
                 image_seq_len = latents.shape[1]
                 mu = calculate_shift(
                     image_seq_len,
@@ -1555,7 +1464,8 @@ def main():
                     noise_scheduler.config.get("base_shift", 0.5),
                     noise_scheduler.config.get("max_shift", 1.15),
                 )
-                noise_scheduler.set_timesteps(sigmas=sigmas, device=latents.device, mu=mu)
+                noise_scheduler.sigma_min = 0.0
+                noise_scheduler.set_timesteps(args.train_sampling_steps, device=latents.device, mu=mu)
                 timesteps = noise_scheduler.timesteps[indices].to(device=latents.device)
 
                 def get_sigmas(timesteps, n_dim=4, dtype=torch.float32):
@@ -1577,16 +1487,14 @@ def main():
                 # Add noise
                 target = noise - latents
 
+                timesteps = (1000 - timesteps) / 1000
+
                 # Predict the noise residual
                 with torch.cuda.amp.autocast(dtype=weight_dtype), torch.cuda.device(device=accelerator.device):
                     noise_pred = transformer3d(
-                        hidden_states=noisy_latents,
-                        timestep=timesteps / 1000,
-                        guidance=guidance,
-                        encoder_hidden_states=prompt_embeds,
-                        txt_ids=text_ids,
-                        img_ids=latent_image_ids,
-                        return_dict=False,
+                        x=noisy_latents,
+                        t=timesteps,
+                        cap_feats=prompt_embeds,
                     )[0]
 
                 def custom_mse_loss(noise_pred, target, weighting=None, threshold=50):
@@ -1602,7 +1510,7 @@ def main():
                     return final_loss
                 
                 weighting = compute_loss_weighting_for_sd3(weighting_scheme=args.weighting_scheme, sigmas=sigmas)
-                loss = custom_mse_loss(noise_pred.float(), target.float(), weighting.float())
+                loss = custom_mse_loss(-noise_pred.float(), target.float(), weighting.float())
                 loss = loss.mean()
 
                 # Gather the losses across all processes for logging (if we use distributed training).
